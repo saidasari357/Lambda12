@@ -1,0 +1,93 @@
+# Lambda function to create partition for Cloudtrail log on daily basis.
+# You need to schedule it in AWS Lambda.
+
+'''
+-------------------------------------------
+AWS Athena Create Partitions Automatically
+-------------------------------------------
+
+-----
+1) Before schedule it, you need to create partitions for till current date.
+2) This is will start creating partitions with next day [current date +1].
+3) This will not return the Athena query is successful or not. But this
+   will return the Query Execution ID. 
+HOW THIS WORKS:
+---------------
+1) It'll check the list of regions that cloudwatch logs captured from the 
+   S3. Becuase few peoples will use only particular region. So they won't
+   get any logs on other regions. 
+2) Then it'll start executing the create partition queries against all 
+   the regions. 
+Example Cloudtrail Path:
+-----------------------
+s3://bucket/AWSLogs/Account_ID/Cloudtrail/regions/year/month/day/log_files
+PARAMETERS NEEDS TO CHANGE:
+---------------------------
+1) s3_buckcet - Bucket name where your cloudtrail logs stored.
+2) s3_prefix - Path for your cloudtrail logs (give the prefix before the regions. 
+   for eg: s3://bucket/AWSLogs/AccountID/Cloudtrail/regions/year/month/day/log_files
+   So you need to use path: AWSLogs/AccountID/Cloudtrail/ )
+3) s3_ouput - Path for where your Athena query results need to be saved.
+4) database - Name of the DB where your Cloudtrail logs table located.
+5) table_name - Nanme of the table where your Cloudtrail logs table located.
+DEBUGGING:
+----------
+1) comment the line 103 [run_query(query, database, s3_ouput]
+2) remove comment from line 101 and 102 [print(get-regions), print(query)]
+---------------------------------------------------------------------------------'''
+
+#Import libraries 
+import boto3
+import datetime
+
+#Connection for S3 and Athena
+s3 = boto3.client('s3')
+athena = boto3.client('athena')
+
+#Get Year, Month, Day for partition (this will get tomorrow date's value)
+date = datetime.datetime.now()
+athena_year = str(date.year)
+athena_month = str(date.month).rjust(2, '0')
+athena_day = str(date.day + 1).rjust(2, '0')
+
+#Parameters for S3 log location and Athena table
+#Fill this carefully (Read the commented section on top to help)
+s3_buckcet = 'cloudtrail-logs'
+s3_prefix = 'AWSLogs/XXXXXXXXXXXX/CloudTrail/'
+s3_input = 's3://' + s3_buckcet + '/' + s3_prefix
+s3_ouput = 's3://aws-athena-query-results-XXXXXXXXXXXXXX-us-east-1'
+database = 'athena_log_database'
+table_name = 'cloudtrail_logs_table'
+
+
+#Executing the athena query:
+def run_query(query, database, s3_output):
+        query_response = athena.start_query_execution(
+        QueryString=query,
+        QueryExecutionContext={
+            'Database': database
+            },
+        ResultConfiguration={
+            'OutputLocation': s3_output,
+            }
+        )
+        print('Execution ID: ' + query_response['QueryExecutionId'])
+        return query_response
+    
+#Main function for get regions and run the query on the captured regions
+def lambda_handler(event, context):
+ result =  s3.list_objects(Bucket=s3_buckcet,Prefix=s3_prefix, Delimiter='/')
+ for regions in result.get('CommonPrefixes'):
+    get_region=(regions.get('Prefix','').replace(s3_prefix,'').replace('/',''))
+    query = str("ALTER TABLE "+ table_name +" ADD PARTITION (region='"
+            + get_region + "',year="
+            + athena_year + ",month=" 
+            + athena_month + ",day="
+            + athena_day
+            + ") location '"+s3_input
+            + get_region
+            + "/" + athena_year + "/" + athena_month + "/"
+            + athena_day + "';")
+      #print(get_region) -- for debug
+      #print(query) -- for debug
+    run_query(query, database, s3_ouput)
